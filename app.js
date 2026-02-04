@@ -80,7 +80,7 @@ async function getAllRecords(){
 
 // UI state
 let currentPage = 1;
-let pageSize = Number(localStorage.getItem('pageSize') || 25);
+let pageSize = Number(localStorage.getItem('pageSize') || 100);
 let totalRecords = 0;
 let sortBy = null; // key
 let sortDir = 1; // 1 asc, -1 desc
@@ -156,7 +156,7 @@ async function fetchAndRender(){
 
   totalRecords = filtered.length;
   const start = (currentPage-1)*pageSize;
-  const pageData = filtered.slice(start, start+pageSize);
+  const pageData = pageSize >= 9999 ? filtered : filtered.slice(start, start+pageSize);
   records = pageData;
 
   populateFilters(all);
@@ -217,10 +217,20 @@ function renderTable(){
 }
 
 function renderPagination(){
-  const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+  const totalPages = pageSize >= 9999 ? 1 : Math.max(1, Math.ceil(totalRecords / pageSize));
   let pag = document.getElementById('pagination');
   if(!pag){ pag = document.createElement('div'); pag.id='pagination'; pag.style.marginTop='10px'; document.querySelector('main').appendChild(pag); }
   pag.innerHTML = '';
+  
+  if(pageSize >= 9999) {
+    const info = document.createElement('span'); 
+    info.style.margin='0 8px'; 
+    info.style.color='#374151'; 
+    info.textContent = `Mostrando todos os ${totalRecords} registros`;
+    pag.appendChild(info);
+    return;
+  }
+  
   const prev = document.createElement('button'); prev.textContent = '◀'; prev.disabled = currentPage<=1; prev.onclick = ()=>{ currentPage = Math.max(1, currentPage-1); fetchAndRenderDebounced(); };
   const next = document.createElement('button'); next.textContent = '▶'; next.disabled = currentPage>=totalPages; next.onclick = ()=>{ currentPage = Math.min(totalPages, currentPage+1); fetchAndRenderDebounced(); };
   const info = document.createElement('span'); info.style.margin='0 8px'; info.style.color='#374151'; info.textContent = `Página ${currentPage} / ${totalPages}`;
@@ -286,7 +296,7 @@ function openForm(defaults={}, isEdit=false){
       } else if (isDate) {
         field = `<input type="date" name="${header.key}" value="${toISODate(val)}"/>`;
       } else {
-        field = `<input name="${header.key}" value="${escapeHtml(val)}" ${header.key === 'cnpj' ? 'onblur="handleCNPJLookup(this)"' : ''}/>`;
+        field = `<input name="${header.key}" value="${escapeHtml(val)}" ${header.key === 'codigo_do_cliente' ? 'onblur="handleClienteLookup(this)"' : ''}${header.key === 'cnpj' ? 'onblur="handleCNPJLookup(this)"' : ''}/>`;
       }
       
       form.insertAdjacentHTML('beforeend', `<div class="form-row"><label>${header.label}${field}</label></div>`);
@@ -556,42 +566,143 @@ function handlePrint(){
   w.document.write(html); w.document.close(); w.focus(); setTimeout(()=>w.print(), 500);
 }
 
-// Busca automática de dados por CNPJ
-async function searchCompanyByCNPJ(cnpj) {
-  const cleanCNPJ = cnpj.replace(/\D/g, '');
-  if (cleanCNPJ.length !== 14) return null;
+// Sincronização automática diária
+let clientesCache = JSON.parse(localStorage.getItem('clientesCache') || 'null');
+let ultimaSync = localStorage.getItem('ultimaSync');
+
+// Verificar se precisa sincronizar (diariamente às 9h)
+function verificarSincronizacao() {
+  const agora = new Date();
+  const hoje = agora.toDateString();
+  const ultimaSyncDate = ultimaSync ? new Date(ultimaSync).toDateString() : null;
+  
+  // Se nunca sincronizou ou se é um novo dia e já passou das 9h
+  if (!ultimaSyncDate || (ultimaSyncDate !== hoje && agora.getHours() >= 9)) {
+    sincronizarDados();
+  }
+}
+
+// Sincronizar dados do SAP HANA
+async function sincronizarDados() {
+  try {
+    console.log('Iniciando sincronização com SAP HANA...');
+    
+    const response = await fetch('/.netlify/functions/sap-hana?action=sync', {
+      method: 'GET'
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success) {
+        clientesCache = data.data;
+        localStorage.setItem('clientesCache', JSON.stringify(clientesCache));
+        localStorage.setItem('ultimaSync', new Date().toISOString());
+        console.log(`Sincronização concluída: ${data.data.total_clientes} clientes`);
+        
+        // Mostrar notificação de sucesso
+        mostrarNotificacao(`✅ Dados sincronizados: ${data.data.total_clientes} clientes`, 'success');
+      }
+    } else {
+      console.warn('Erro na sincronização, usando dados locais');
+      mostrarNotificacao('⚠️ Erro na sincronização, usando dados locais', 'warning');
+    }
+  } catch (error) {
+    console.warn('Erro na sincronização:', error);
+    mostrarNotificacao('⚠️ Erro na sincronização, usando dados locais', 'warning');
+  }
+}
+
+// Mostrar notificações
+function mostrarNotificacao(mensagem, tipo = 'info') {
+  const notif = document.createElement('div');
+  notif.style.cssText = `
+    position: fixed; top: 20px; right: 20px; z-index: 9999;
+    padding: 12px 20px; border-radius: 8px; color: white;
+    background: ${tipo === 'success' ? '#059669' : tipo === 'warning' ? '#d97706' : '#2563eb'};
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  `;
+  notif.textContent = mensagem;
+  document.body.appendChild(notif);
+  
+  setTimeout(() => notif.remove(), 5000);
+}
+
+// Busca automática no SAP HANA por código do cliente
+async function searchClienteBySAPHANA(codigoCliente) {
+  if (!codigoCliente || !codigoCliente.trim()) return null;
   
   try {
-    // API pública da ReceitaWS
-    const response = await fetch(`https://www.receitaws.com.br/v1/cnpj/${cleanCNPJ}`);
-    if (!response.ok) throw new Error('API indisponível');
+    // Primeiro, buscar no cache local
+    if (clientesCache && clientesCache.clientes) {
+      const cliente = clientesCache.clientes.find(c => 
+        c.codigo_do_cliente.toLowerCase() === codigoCliente.toLowerCase()
+      );
+      if (cliente) {
+        console.log('Cliente encontrado no cache local');
+        return cliente;
+      }
+    }
     
-    const data = await response.json();
-    if (data.status === 'ERROR') throw new Error(data.message);
+    // Se não encontrou no cache, buscar no SAP HANA
+    const response = await fetch('/.netlify/functions/sap-hana', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        codigo: codigoCliente.trim()
+      })
+    });
     
-    return {
-      razao_social: data.nome || '',
-      nome_fantasia: data.fantasia || data.nome || '',
-      cnpj: data.cnpj || '',
-      e_mail: data.email || '',
-      principal_contato: data.telefone || '',
-      // Outros campos podem ser mapeados conforme disponível na API
-    };
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success) {
+        console.log(`Cliente encontrado no ${data.source}`);
+        return data.cliente;
+      }
+    }
+    
+    // Fallback: buscar nos registros locais
+    return await searchClienteLocal(codigoCliente);
+    
   } catch (error) {
-    console.warn('Erro ao buscar dados do CNPJ:', error);
+    console.warn('Erro ao buscar dados no SAP HANA:', error);
+    return await searchClienteLocal(codigoCliente);
+  }
+}
+
+// Busca local como fallback
+async function searchClienteLocal(codigoCliente) {
+  try {
+    const all = await getAllRecords();
+    const cliente = all.find(r => 
+      String(r.codigo_do_cliente).toLowerCase() === String(codigoCliente).toLowerCase()
+    );
+    return cliente || null;
+  } catch (error) {
     return null;
   }
 }
 
-// Função para preencher campos automaticamente
-function fillCompanyData(data) {
-  Object.keys(data).forEach(key => {
-    const input = form.querySelector(`[name="${key}"]`);
-    if (input && !input.value) {
-      input.value = data[key];
-      input.style.backgroundColor = '#1a4d1a'; // Verde escuro para indicar preenchimento automático
-    }
-  });
+// Função para lidar com busca por código do cliente
+async function handleClienteLookup(input) {
+  const codigo = input.value.trim();
+  if (!codigo) return;
+  
+  input.style.backgroundColor = '#333';
+  input.disabled = true;
+  
+  const clienteData = await searchClienteBySAPHANA(codigo);
+  
+  input.disabled = false;
+  input.style.backgroundColor = '#000';
+  
+  if (clienteData) {
+    fillCompanyData(clienteData);
+    mostrarNotificacao('✅ Dados do cliente preenchidos automaticamente!', 'success');
+  } else {
+    mostrarNotificacao('⚠️ Cliente não encontrado. Verifique o código.', 'warning');
+  }
 }
 
 // Função para lidar com busca por CNPJ
@@ -612,6 +723,63 @@ async function handleCNPJLookup(input) {
     alert('Dados da empresa preenchidos automaticamente!');
   } else {
     alert('Não foi possível buscar os dados da empresa. Verifique o CNPJ.');
+  }
+}
+
+// Função para preencher campos automaticamente
+function fillCompanyData(data) {
+  Object.keys(data).forEach(key => {
+    const input = form.querySelector(`[name="${key}"]`);
+    if (input && !input.value) {
+      input.value = data[key];
+      input.style.backgroundColor = '#1a4d1a'; // Verde escuro para indicar preenchimento automático
+    }
+  });
+}
+
+// Busca automática de dados por CNPJ (ReceitaWS)
+async function searchCompanyByCNPJ(cnpj) {
+  const cleanCNPJ = cnpj.replace(/\D/g, '');
+  if (cleanCNPJ.length !== 14) return null;
+  
+  try {
+    const response = await fetch(`https://www.receitaws.com.br/v1/cnpj/${cleanCNPJ}`);
+    if (!response.ok) throw new Error('API indisponível');
+    
+    const data = await response.json();
+    if (data.status === 'ERROR') throw new Error(data.message);
+    
+    return {
+      razao_social: data.nome || '',
+      nome_fantasia: data.fantasia || data.nome || '',
+      cnpj: data.cnpj || '',
+      e_mail: data.email || '',
+      principal_contato: data.telefone || ''
+    };
+  } catch (error) {
+    console.warn('Erro ao buscar dados do CNPJ:', error);
+    return null;
+  }
+}
+
+// Função para lidar com busca por CNPJ
+async function handleCNPJLookup(input) {
+  const cnpj = input.value.trim();
+  if (!cnpj || !validateCNPJ(cnpj)) return;
+  
+  input.style.backgroundColor = '#333';
+  input.disabled = true;
+  
+  const companyData = await searchCompanyByCNPJ(cnpj);
+  
+  input.disabled = false;
+  input.style.backgroundColor = '#000';
+  
+  if (companyData) {
+    fillCompanyData(companyData);
+    mostrarNotificacao('✅ Dados da empresa preenchidos automaticamente!', 'success');
+  } else {
+    mostrarNotificacao('⚠️ Não foi possível buscar os dados da empresa. Verifique o CNPJ.', 'warning');
   }
 }
 
@@ -683,4 +851,10 @@ window.addEventListener('load', function() {
   
   // Inicializar a aplicação
   initializeApp();
+  
+  // Verificar sincronização automática
+  verificarSincronizacao();
+  
+  // Configurar sincronização diária
+  setInterval(verificarSincronizacao, 60000); // Verificar a cada minuto
 });
