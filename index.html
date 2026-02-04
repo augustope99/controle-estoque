@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#2563eb" />
+  <title>Controle de Estoque de Máquinas</title>
+  <link rel="stylesheet" href="styles.css?v=2">
+</head>
+<body>
+  <header>
+    <h1>Controle de Estoque de Máquinas</h1>
+    <p class="muted">Conecte a sua planilha Google (Apps Script) ou use em modo local para testes.</p>
+  </header>
+
+  <section class="controls">
+    <div style="font-weight:600;margin-right:8px">Modo: Local (IndexedDB)</div>
+
+    <input id="searchInput" placeholder="🔎 Busca global (Nome, CNPJ, Cliente...)" />
+
+    <label>Filial:
+      <select id="filterFilial"><option value="">— Todas —</option></select>
+    </label>
+    <label>Marca:
+      <select id="filterMarca"><option value="">— Todas —</option></select>
+    </label>
+    <label>CNPJ:
+      <select id="filterCNPJ"><option value="">— Todas —</option></select>
+    </label>
+
+    <input type="file" id="importFile" accept=".csv,.xlsx,.xls" />
+    <button id="importBtn">⬆ Importar CSV / Excel</button>
+    <button id="exportBtn">⬇ Exportar CSV</button>
+    <button id="printBtn">🖨 Imprimir / PDF</button>
+
+    <label>Por página:
+      <select id="pageSize">
+        <option value="10">10</option>
+        <option value="25" selected>25</option>
+        <option value="50">50</option>
+        <option value="100">100</option>
+      </select>
+    </label>
+
+    <button id="refresh">🔄 Atualizar</button>
+    <button id="addNew">➕ Novo</button>
+  </section>
+
+  <main>
+    <div id="tableWrap"></div>
+  </main>
+
+  <!-- Modal formulário -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <h2 id="modalTitle">Novo registro</h2>
+      <form id="recordForm"></form>
+      <div class="modal-actions">
+        <button id="saveBtn" class="primary">Salvar</button>
+        <button id="cancelBtn" class="secondary">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal mapeamento de colunas -->
+  <div id="mapModal" class="modal hidden">
+    <div class="modal-content">
+      <h2>Mapeamento de Colunas (Importação CSV)</h2>
+      <p class="muted">Associe cada coluna do seu CSV a um campo do sistema. Escolha "— Ignorar —" para colunas que não quer importar.</p>
+      <form id="mapForm"></form>
+      <div class="modal-actions">
+        <button id="mapConfirm" class="primary">Confirmar e Importar</button>
+        <button id="mapCancel" class="secondary">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <small>Arquivos: <code>index.html</code> • <code>styles.css</code> • <code>app.js</code></small>
+  </footer>
+
+  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
