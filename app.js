@@ -87,8 +87,9 @@ let sortDir = 1; // 1 asc, -1 desc
 let records = [];
 
 // Elements
-const refreshBtn = document.getElementById('refresh');
+const refreshBtn = document.getElementById('refreshBtn');
 const addNewBtn = document.getElementById('addNew');
+const syncBtn = document.getElementById('syncBtn');
 const tableWrap = document.getElementById('tableWrap');
 const modal = document.getElementById('modal');
 const modalTitle = document.getElementById('modalTitle');
@@ -121,6 +122,11 @@ const fetchAndRenderDebounced = debounce(fetchAndRender, 200);
 pageSizeEl.addEventListener('change', e=>{pageSize=Number(e.target.value);localStorage.setItem('pageSize',pageSize);currentPage=1;fetchAndRenderDebounced();});
 refreshBtn.addEventListener('click', fetchAndRenderDebounced);
 addNewBtn.addEventListener('click', ()=>openForm());
+syncBtn.addEventListener('click', ()=>{
+  if(confirm('Conecte a VPN antes de sincronizar. Continuar?')) {
+    sincronizarDados();
+  }
+});
 searchInput.addEventListener('input', debounce(()=>{currentPage=1;fetchAndRenderDebounced();}, 300));
 filterFilial.addEventListener('change', ()=>{currentPage=1;fetchAndRenderDebounced();});
 filterMarca.addEventListener('change', ()=>{currentPage=1;fetchAndRenderDebounced();});
@@ -612,19 +618,41 @@ async function sincronizarDados() {
   }
 }
 
-// Mostrar notificações
-function mostrarNotificacao(mensagem, tipo = 'info') {
-  const notif = document.createElement('div');
-  notif.style.cssText = `
-    position: fixed; top: 20px; right: 20px; z-index: 9999;
-    padding: 12px 20px; border-radius: 8px; color: white;
-    background: ${tipo === 'success' ? '#059669' : tipo === 'warning' ? '#d97706' : '#2563eb'};
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+// Mostrar status da sincronização na interface
+function mostrarStatusSync() {
+  const statusDiv = document.createElement('div');
+  statusDiv.id = 'syncStatus';
+  statusDiv.style.cssText = `
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    padding: 8px 16px; border-radius: 20px; font-size: 12px;
+    z-index: 1000; color: white;
   `;
-  notif.textContent = mensagem;
-  document.body.appendChild(notif);
   
-  setTimeout(() => notif.remove(), 5000);
+  if (ultimaSync) {
+    const dataSync = new Date(ultimaSync);
+    const agora = new Date();
+    const diffHoras = Math.floor((agora - dataSync) / (1000 * 60 * 60));
+    
+    if (diffHoras < 24) {
+      statusDiv.style.background = '#059669';
+      statusDiv.textContent = `✅ Dados atualizados (${diffHoras}h atrás)`;
+    } else {
+      statusDiv.style.background = '#d97706';
+      statusDiv.textContent = `⚠️ Dados desatualizados (${Math.floor(diffHoras/24)} dias)`;
+    }
+  } else {
+    statusDiv.style.background = '#dc2626';
+    statusDiv.textContent = '❌ Dados não sincronizados';
+  }
+  
+  // Remover status anterior
+  const oldStatus = document.getElementById('syncStatus');
+  if (oldStatus) oldStatus.remove();
+  
+  document.body.appendChild(statusDiv);
+  
+  // Remover após 5 segundos
+  setTimeout(() => statusDiv.remove(), 5000);
 }
 
 // Busca automática no SAP HANA por código do cliente
@@ -705,27 +733,6 @@ async function handleClienteLookup(input) {
   }
 }
 
-// Função para lidar com busca por CNPJ
-async function handleCNPJLookup(input) {
-  const cnpj = input.value.trim();
-  if (!cnpj || !validateCNPJ(cnpj)) return;
-  
-  input.style.backgroundColor = '#333'; // Indicar que está buscando
-  input.disabled = true;
-  
-  const companyData = await searchCompanyByCNPJ(cnpj);
-  
-  input.disabled = false;
-  input.style.backgroundColor = '#000';
-  
-  if (companyData) {
-    fillCompanyData(companyData);
-    alert('Dados da empresa preenchidos automaticamente!');
-  } else {
-    alert('Não foi possível buscar os dados da empresa. Verifique o CNPJ.');
-  }
-}
-
 // Função para preencher campos automaticamente
 function fillCompanyData(data) {
   Object.keys(data).forEach(key => {
@@ -781,6 +788,21 @@ async function handleCNPJLookup(input) {
   } else {
     mostrarNotificacao('⚠️ Não foi possível buscar os dados da empresa. Verifique o CNPJ.', 'warning');
   }
+}
+
+// Mostrar notificações
+function mostrarNotificacao(mensagem, tipo = 'info') {
+  const notif = document.createElement('div');
+  notif.style.cssText = `
+    position: fixed; top: 20px; right: 20px; z-index: 9999;
+    padding: 12px 20px; border-radius: 8px; color: white;
+    background: ${tipo === 'success' ? '#059669' : tipo === 'warning' ? '#d97706' : '#2563eb'};
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  `;
+  notif.textContent = mensagem;
+  document.body.appendChild(notif);
+  
+  setTimeout(() => notif.remove(), 5000);
 }
 
 function escapeHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -852,9 +874,12 @@ window.addEventListener('load', function() {
   // Inicializar a aplicação
   initializeApp();
   
-  // Verificar sincronização automática
-  verificarSincronizacao();
+  // Mostrar status da sincronização
+  mostrarStatusSync();
   
-  // Configurar sincronização diária
-  setInterval(verificarSincronizacao, 60000); // Verificar a cada minuto
+  // Verificar sincronização se for de manhã
+  const agora = new Date();
+  if (agora.getHours() >= 9 && agora.getHours() <= 10) {
+    setTimeout(verificarSincronizacao, 2000);
+  }
 });
