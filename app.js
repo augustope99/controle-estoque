@@ -89,7 +89,9 @@ let records = [];
 // Elements
 const refreshBtn = document.getElementById('refreshBtn');
 const addNewBtn = document.getElementById('addNew');
+const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
 const syncBtn = document.getElementById('syncBtn');
+const testBtn = document.getElementById('testBtn');
 const tableWrap = document.getElementById('tableWrap');
 const modal = document.getElementById('modal');
 const modalTitle = document.getElementById('modalTitle');
@@ -126,6 +128,12 @@ syncBtn.addEventListener('click', ()=>{
   if(confirm('Conecte a VPN antes de sincronizar. Continuar?')) {
     sincronizarDados();
   }
+});
+testBtn.addEventListener('click', ()=>{
+  testarConectividadeSAPHANA();
+});
+deleteSelectedBtn.addEventListener('click', ()=>{
+  deleteSelectedRecords();
 });
 searchInput.addEventListener('input', debounce(()=>{currentPage=1;fetchAndRenderDebounced();}, 300));
 filterFilial.addEventListener('change', ()=>{currentPage=1;fetchAndRenderDebounced();});
@@ -194,6 +202,7 @@ function renderTable(){
     return;
   }
   let html = '<table class="table"><thead><tr>';
+  html += '<th><input type="checkbox" id="selectAll" title="Selecionar todos"/></th>';
   const visible = headers.slice(0,8);
   visible.forEach(h=>{
     html+=`<th data-key="${h.key}" class="sortable">${h.label} <span class="sorthint">${sortBy===h.key?(sortDir===1?'▲':'▼'):' '}</span></th>`;
@@ -201,6 +210,7 @@ function renderTable(){
   html+='<th>Ações</th></tr></thead><tbody>';
   records.forEach(rec=>{
     html+='<tr>';
+    html+=`<td><input type="checkbox" class="record-checkbox" data-id="${rec.id}"/></td>`;
     visible.forEach(h=>html+=`<td>${escapeHtml(rec[h.key]||'')}</td>`);
     html+=`<td class="actions">`;
     html+=`<button data-id="${rec.id}" class="view">👁️</button>`;
@@ -220,6 +230,19 @@ function renderTable(){
   tableWrap.querySelectorAll('th.sortable').forEach(th=>th.addEventListener('click', ()=>{
     const k = th.dataset.key; if(sortBy===k) sortDir = -sortDir; else { sortBy=k; sortDir=1; } fetchAndRenderDebounced();
   }));
+  
+  // Selecionar todos
+  const selectAll = document.getElementById('selectAll');
+  const checkboxes = document.querySelectorAll('.record-checkbox');
+  
+  selectAll.addEventListener('change', ()=>{
+    checkboxes.forEach(cb => cb.checked = selectAll.checked);
+    updateDeleteButton();
+  });
+  
+  checkboxes.forEach(cb => {
+    cb.addEventListener('change', updateDeleteButton);
+  });
 }
 
 function renderPagination(){
@@ -588,71 +611,82 @@ function verificarSincronizacao() {
   }
 }
 
-// Sincronizar dados do SAP HANA
-async function sincronizarDados() {
+// Atualizar visibilidade do botão de exclusão
+function updateDeleteButton() {
+  const selected = document.querySelectorAll('.record-checkbox:checked');
+  if (selected.length > 0) {
+    deleteSelectedBtn.style.display = 'inline-block';
+    deleteSelectedBtn.textContent = `🗑️ Excluir ${selected.length} selecionado${selected.length > 1 ? 's' : ''}`;
+  } else {
+    deleteSelectedBtn.style.display = 'none';
+  }
+}
+
+// Excluir registros selecionados
+async function deleteSelectedRecords() {
+  const selected = document.querySelectorAll('.record-checkbox:checked');
+  if (selected.length === 0) {
+    alert('Nenhum registro selecionado');
+    return;
+  }
+  
+  const count = selected.length;
+  const confirmMsg = `Tem certeza que deseja excluir ${count} registro${count > 1 ? 's' : ''}?\n\nEsta ação não pode ser desfeita.`;
+  
+  if (!confirm(confirmMsg)) return;
+  
+  let deleted = 0;
+  for (const checkbox of selected) {
+    const id = checkbox.dataset.id;
+    try {
+      await deleteRecordDB(id);
+      deleted++;
+    } catch (error) {
+      console.error('Erro ao excluir registro:', id, error);
+    }
+  }
+  
+  mostrarNotificacao(`✅ ${deleted} registro${deleted > 1 ? 's' : ''} excluído${deleted > 1 ? 's' : ''}`, 'success');
+  fetchAndRenderDebounced();
+}
+
+// Testar conectividade SAP HANA
+async function testarConectividadeSAPHANA() {
+  mostrarNotificacao('🔍 Testando conectividade SAP HANA...', 'info');
+  
   try {
-    console.log('Iniciando sincronização com SAP HANA...');
-    
-    const response = await fetch('/.netlify/functions/sap-hana?action=sync', {
-      method: 'GET'
+    // Tentar fazer uma requisição simples para testar
+    const response = await fetch('/.netlify/functions/sap-hana', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        codigo: 'TEST_CONNECTION'
+      })
     });
     
     if (response.ok) {
       const data = await response.json();
-      if (data.success) {
-        clientesCache = data.data;
-        localStorage.setItem('clientesCache', JSON.stringify(clientesCache));
-        localStorage.setItem('ultimaSync', new Date().toISOString());
-        console.log(`Sincronização concluída: ${data.data.total_clientes} clientes`);
-        
-        // Mostrar notificação de sucesso
-        mostrarNotificacao(`✅ Dados sincronizados: ${data.data.total_clientes} clientes`, 'success');
-      }
+      mostrarNotificacao('✅ Conectividade SAP HANA OK!', 'success');
+      console.log('Resposta SAP HANA:', data);
     } else {
-      console.warn('Erro na sincronização, usando dados locais');
-      mostrarNotificacao('⚠️ Erro na sincronização, usando dados locais', 'warning');
+      mostrarNotificacao('⚠️ SAP HANA inacessível. Verifique VPN.', 'warning');
+      console.error('Erro HTTP:', response.status);
     }
   } catch (error) {
-    console.warn('Erro na sincronização:', error);
-    mostrarNotificacao('⚠️ Erro na sincronização, usando dados locais', 'warning');
-  }
-}
-
-// Mostrar status da sincronização na interface
-function mostrarStatusSync() {
-  const statusDiv = document.createElement('div');
-  statusDiv.id = 'syncStatus';
-  statusDiv.style.cssText = `
-    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
-    padding: 8px 16px; border-radius: 20px; font-size: 12px;
-    z-index: 1000; color: white;
-  `;
-  
-  if (ultimaSync) {
-    const dataSync = new Date(ultimaSync);
-    const agora = new Date();
-    const diffHoras = Math.floor((agora - dataSync) / (1000 * 60 * 60));
+    mostrarNotificacao('❌ Erro de conectividade SAP HANA', 'warning');
+    console.error('Erro:', error);
     
-    if (diffHoras < 24) {
-      statusDiv.style.background = '#059669';
-      statusDiv.textContent = `✅ Dados atualizados (${diffHoras}h atrás)`;
-    } else {
-      statusDiv.style.background = '#d97706';
-      statusDiv.textContent = `⚠️ Dados desatualizados (${Math.floor(diffHoras/24)} dias)`;
-    }
-  } else {
-    statusDiv.style.background = '#dc2626';
-    statusDiv.textContent = '❌ Dados não sincronizados';
+    // Mostrar instruções
+    setTimeout(() => {
+      alert(`Erro de conectividade SAP HANA:\n\n` +
+            `1. Verifique se a VPN está conectada\n` +
+            `2. Execute: testar-conectividade.bat\n` +
+            `3. Teste no navegador: https://66e1ac83-47f3-47b1-bccb-a770533ef44f.hana.prod-us10.hanacloud.ondemand.com\n\n` +
+            `Erro: ${error.message}`);
+    }, 1000);
   }
-  
-  // Remover status anterior
-  const oldStatus = document.getElementById('syncStatus');
-  if (oldStatus) oldStatus.remove();
-  
-  document.body.appendChild(statusDiv);
-  
-  // Remover após 5 segundos
-  setTimeout(() => statusDiv.remove(), 5000);
 }
 
 // Busca automática no SAP HANA por código do cliente
@@ -712,24 +746,19 @@ async function searchClienteLocal(codigoCliente) {
   }
 }
 
-// Função para lidar com busca por código do cliente
+// Função para lidar com busca por código do cliente (DESABILITADA - SAP HANA)
 async function handleClienteLookup(input) {
   const codigo = input.value.trim();
   if (!codigo) return;
   
-  input.style.backgroundColor = '#333';
-  input.disabled = true;
-  
-  const clienteData = await searchClienteBySAPHANA(codigo);
-  
-  input.disabled = false;
-  input.style.backgroundColor = '#000';
+  // Buscar nos dados locais primeiro
+  const clienteData = await searchClienteLocal(codigo);
   
   if (clienteData) {
     fillCompanyData(clienteData);
-    mostrarNotificacao('✅ Dados do cliente preenchidos automaticamente!', 'success');
+    mostrarNotificacao('✅ Cliente encontrado nos dados locais!', 'success');
   } else {
-    mostrarNotificacao('⚠️ Cliente não encontrado. Verifique o código.', 'warning');
+    mostrarNotificacao('⚠️ Cliente não encontrado. SAP HANA requer VPN.', 'warning');
   }
 }
 
@@ -803,6 +832,36 @@ function mostrarNotificacao(mensagem, tipo = 'info') {
   document.body.appendChild(notif);
   
   setTimeout(() => notif.remove(), 5000);
+}
+
+// Sincronizar dados do SAP HANA
+async function sincronizarDados() {
+  try {
+    console.log('Iniciando sincronização com SAP HANA...');
+    
+    const response = await fetch('/.netlify/functions/sap-hana?action=sync', {
+      method: 'GET'
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success) {
+        clientesCache = data.data;
+        localStorage.setItem('clientesCache', JSON.stringify(clientesCache));
+        localStorage.setItem('ultimaSync', new Date().toISOString());
+        console.log(`Sincronização concluída: ${data.data.total_clientes} clientes`);
+        
+        // Mostrar notificação de sucesso
+        mostrarNotificacao(`✅ Dados sincronizados: ${data.data.total_clientes} clientes`, 'success');
+      }
+    } else {
+      console.warn('Erro na sincronização, usando dados locais');
+      mostrarNotificacao('⚠️ Erro na sincronização, usando dados locais', 'warning');
+    }
+  } catch (error) {
+    console.warn('Erro na sincronização:', error);
+    mostrarNotificacao('⚠️ Erro na sincronização, usando dados locais', 'warning');
+  }
 }
 
 function escapeHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
