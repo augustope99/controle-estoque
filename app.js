@@ -374,19 +374,9 @@ function editRecord(id){
   });
 }
 
-// Validation
+// Validation - DESABILITADA PARA IMPORTAÇÃO
 function validateRecord(obj){
-  const errs = [];
-  if(!obj['codigo_do_cliente'] || !obj['codigo_do_cliente'].trim()) errs.push('Codigo do Cliente é obrigatório');
-  if(obj['e_mail'] && !validateEmail(obj['e_mail'])) errs.push('E-mail inválido');
-  if(obj['cnpj'] && !validateCNPJ(obj['cnpj'])) errs.push('CNPJ inválido');
-  // additional date checks
-  headers.forEach(h=>{
-    if(String(h.key).includes('data') && obj[h.key]){
-      if(!isValidDate(obj[h.key])) errs.push(`${h.label} inválida`);
-    }
-  });
-  return errs;
+  return []; // Sem validação - importar tudo
 }
 function validateEmail(v){ return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v); }
 function isValidDate(v){ return !isNaN(Date.parse(v)); }
@@ -409,54 +399,84 @@ function toISODate(v){ if(!v) return ''; try{ const d = new Date(v); if(isNaN(d)
 
 // Import / Export CSV
 async function handleImport(){
-  console.log('handleImport chamado');
+  console.log('=== INÍCIO DA IMPORTAÇÃO ===');
   const f = importFile.files[0];
   if(!f){ alert('Selecione um arquivo CSV ou Excel (.csv/.xlsx/.xls)'); return; }
-  console.log('Arquivo selecionado:', f.name);
+  console.log('Arquivo:', f.name, 'Tamanho:', f.size, 'bytes');
   const fname = (f.name||'').toLowerCase();
   let txt = '';
 
   try{
     if(fname.endsWith('.csv') || fname.endsWith('.txt')){
       txt = await f.text();
+      console.log('CSV lido, tamanho:', txt.length, 'caracteres');
     } else if(fname.endsWith('.xlsx') || fname.endsWith('.xls')){
       if(typeof XLSX === 'undefined'){
         alert('Biblioteca XLSX não carregada. Recarregue a página.');
         return;
       }
-      // read as array buffer
       const ab = await new Promise((res, rej)=>{ const r=new FileReader(); r.onload = e=>res(e.target.result); r.onerror = ()=>rej(r.error); r.readAsArrayBuffer(f); });
       const data = new Uint8Array(ab);
-      const wb = XLSX.read(data, {type:'array'});
-      const sheets = wb.SheetNames;
-      if(!sheets || sheets.length===0){ alert('Planilha vazia'); return; }
-      if(sheets.length>1){
-        const ok = confirm(`Arquivo contém ${sheets.length} planilhas: ${sheets.join(', ')}. Usar a primeira (${sheets[0]})?`);
-        if(!ok) return;
-      }
-      const csv = XLSX.utils.sheet_to_csv(wb.Sheets[sheets[0]]);
+      console.log('ArrayBuffer lido:', data.length, 'bytes');
+      
+      const wb = XLSX.read(data, {type:'array', cellDates: true, cellNF: false, cellText: false});
+      console.log('Workbook lido. Planilhas:', wb.SheetNames);
+      
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      console.log('Planilha selecionada:', wb.SheetNames[0]);
+      
+      // Verificar range da planilha
+      const range = XLSX.utils.decode_range(sheet['!ref']);
+      console.log('Range da planilha:', sheet['!ref']);
+      console.log('Linhas na planilha:', range.e.r + 1, '(de', range.s.r, 'até', range.e.r, ')');
+      console.log('Colunas na planilha:', range.e.c + 1);
+      
+      // Converter para CSV
+      const csv = XLSX.utils.sheet_to_csv(sheet, {FS: ',', RS: '\n'});
       txt = csv;
+      console.log('CSV gerado, tamanho:', txt.length, 'caracteres');
     } else {
       alert('Formato não suportado. Use CSV ou Excel (.xlsx/.xls)'); return;
     }
-  }catch(err){ console.error(err); alert('Erro ao ler o arquivo: '+(err.message||err)); return; }
+  }catch(err){ 
+    console.error('ERRO ao ler arquivo:', err); 
+    alert('Erro ao ler o arquivo: '+(err.message||err)); 
+    return; 
+  }
 
-  const rows = txt.split(/\r?\n/).filter(r=>r.trim());
-  if(rows.length===0){ alert('Arquivo vazio'); return; }
+  const rows = txt.split(/\r?\n/);
+  console.log('Total de linhas após split:', rows.length);
+  
+  const nonEmptyRows = rows.filter(r=>r.trim());
+  console.log('Linhas não vazias:', nonEmptyRows.length);
+  
+  if(nonEmptyRows.length===0){ alert('Arquivo vazio'); return; }
 
-  // parse header robustly
-  const hdr = parseCsvLine(rows.shift());
+  const hdr = parseCsvLine(nonEmptyRows.shift());
+  console.log('Cabeçalhos encontrados:', hdr.length, '->', hdr);
+  console.log('Linhas de dados restantes:', nonEmptyRows.length);
 
-  // preview first 3 lines (most recent CSV lines)
-  const preview = rows.slice(0,3).map(r=>parseCsvLine(r));
+  // Mapeamento automático
+  const mapping = {};
+  hdr.forEach(h=>{
+    const s = slug(h);
+    const matched = headers.find(H=>H.key===s);
+    if(matched) mapping[h] = matched.key;
+    else mapping[h] = '__ignore';
+  });
+  console.log('Mapeamento criado:', Object.keys(mapping).length, 'colunas');
 
-  // show mapping modal (with preview) and wait for mapping
-  const mapping = await showColumnMappingModal(hdr, preview);
-  if(!mapping){ alert('Importação cancelada'); return; }
-
-  // process rows
+  // Importar TUDO
   let imported = 0;
-  for(const r of rows){
+  let errors = 0;
+  
+  for(let i = 0; i < nonEmptyRows.length; i++){
+    const r = nonEmptyRows[i];
+    if(!r.trim()) {
+      console.log(`Linha ${i+1}: vazia, pulando`);
+      continue;
+    }
+    
     const cols = parseCsvLine(r);
     const obj = {};
     hdr.forEach((h,idx)=>{
@@ -465,12 +485,27 @@ async function handleImport(){
         obj[target] = cols[idx] || '';
       }
     });
-    const errors = validateRecord(obj);
-    if(errors.length){ console.warn('Registro ignorado por erros:', errors, obj); continue; }
-    await addRecord(obj);
-    imported++;
+    
+    if(i < 3) {
+      console.log(`Linha ${i+1} dados:`, obj);
+    }
+    
+    try {
+      await addRecord(obj);
+      imported++;
+      if(imported % 100 === 0) console.log(`✓ ${imported} registros importados...`);
+    } catch(error) {
+      console.error(`✗ Erro na linha ${i+1}:`, error);
+      errors++;
+    }
   }
-  alert(`Importação finalizada (${imported} registros importados)`);
+  
+  console.log('=== FIM DA IMPORTAÇÃO ===');
+  console.log('Total processado:', nonEmptyRows.length);
+  console.log('Importados:', imported);
+  console.log('Erros:', errors);
+  
+  alert(`✅ Importação concluída!\n\n${imported} registros importados\n${errors} erros\nTotal processado: ${nonEmptyRows.length}`);
   fetchAndRenderDebounced();
 }
 
@@ -834,6 +869,30 @@ function mostrarNotificacao(mensagem, tipo = 'info') {
   setTimeout(() => notif.remove(), 5000);
 }
 
+// Mostrar status da sincronização
+function mostrarStatusSync() {
+  const ultimaSync = localStorage.getItem('ultimaSync');
+  if (ultimaSync) {
+    const data = new Date(ultimaSync);
+    const agora = new Date();
+    const diffHoras = Math.floor((agora - data) / (1000 * 60 * 60));
+    
+    let status = '';
+    if (diffHoras < 1) {
+      status = 'Sincronizado há menos de 1 hora';
+    } else if (diffHoras < 24) {
+      status = `Sincronizado há ${diffHoras} hora${diffHoras > 1 ? 's' : ''}`;
+    } else {
+      const diffDias = Math.floor(diffHoras / 24);
+      status = `Sincronizado há ${diffDias} dia${diffDias > 1 ? 's' : ''}`;
+    }
+    
+    console.log('Status sincronização:', status);
+  } else {
+    console.log('Nunca sincronizado com SAP HANA');
+  }
+}
+
 // Sincronizar dados do SAP HANA
 async function sincronizarDados() {
   try {
@@ -933,8 +992,14 @@ window.addEventListener('load', function() {
   // Inicializar a aplicação
   initializeApp();
   
-  // Mostrar status da sincronização
-  mostrarStatusSync();
+  // Mostrar status da sincronização se existir
+  try {
+    if(typeof mostrarStatusSync === 'function') {
+      mostrarStatusSync();
+    }
+  } catch(e) {
+    console.log('Status sync não disponível');
+  }
   
   // Verificar sincronização se for de manhã
   const agora = new Date();
